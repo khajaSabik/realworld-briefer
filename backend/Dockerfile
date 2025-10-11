@@ -14,6 +14,6 @@ COPY . .
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 USER nextjs
 
-EXPOSE 3000
+EXPOSE 3001
 
 CMD ["node", "index.js"]

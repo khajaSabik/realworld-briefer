@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: app-stack-dev
+
+resources:
+  - ../base
+  - namespace.yaml
+
+# Environment-specific patches
+patches:
+  - target:
+      kind: Deployment
+      name: realworld-backend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment  
+      name: realworld-frontend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: ConfigMap
+      name: realworld-backend-config
+    patch: |-
+      - op: replace
+        path: /data/NODE_ENV
+        value: development
+
+commonLabels:
+  environment: dev
