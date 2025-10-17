@@ -4,4 +4,4 @@ metadata:
   name: app-stack-release
   labels:
     environment: release
-    app: realworld 
+    app: realworld

@@ -11,7 +11,7 @@ For more information on how to this works with other frontends/backends, head ov
 ## Prerequisites
 
 - Make sure your have a Node.js (v14 or newer) installed.
-- Make sure you have your database setup.
+- Make sure you have your database setup.  
 
 ## Installation
 

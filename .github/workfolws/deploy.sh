@@ -2,20 +2,15 @@
 set -e
 
 ENVIRONMENT=$1
-IMAGE_TAG=$2
+K8S_NAMESPACE="app-stack"
 
-echo "🚀 Deploying to $ENVIRONMENT with tag $IMAGE_TAG"
+echo "🚀 Deploying to $ENVIRONMENT"
+echo "📁 Namespace: ${K8S_NAMESPACE}-${ENVIRONMENT}"
 
-# Update image tags using kustomize
-cd kubernetes/$ENVIRONMENT
-kustomize edit set image realworld-backend=$IMAGE_TAG-backend
-kustomize edit set image realworld-frontend=$IMAGE_TAG-frontend
+# Create namespace if it doesn't exist
+kubectl create namespace ${K8S_NAMESPACE}-${ENVIRONMENT} --dry-run=client -o yaml | kubectl apply -f -
 
-# Apply using kustomize
-kubectl apply -k .
+# Deploy using kustomize
+kubectl apply -k kubernetes/${ENVIRONMENT}/
 
-# Wait for rollout
-kubectl rollout status deployment/realworld-backend -n app-stack-$ENVIRONMENT --timeout=300s
-kubectl rollout status deployment/realworld-frontend -n app-stack-$ENVIRONMENT --timeout=300s
-
-echo "✅ Deployment completed to $ENVIRONMENT"
+echo "✅ Deployment initiated to $ENVIRONMENT"
