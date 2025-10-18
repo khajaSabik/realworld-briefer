@@ -1,54 +1,100 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline - RealWorld App
 
 on:
   push:
-    branches: [ main, master, pre-release , release ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ master, pre-release/** , release/** ]
 
 env:
-  K8S_NAMESPACE: "app-stack"
+  REGISTRY: docker.io
+  REPOSITORY: khajasabik/realworld-example
 
 jobs:
-  test:
-    name: Run Tests
+  build-and-push:
+    name: Build and Push to Docker Hub
     runs-on: ubuntu-latest
+    
+    outputs:
+      backend-tag: ${{ steps.tags.outputs.backend-tag }}
+      frontend-tag: ${{ steps.tags.outputs.frontend-tag }}
+      environment: ${{ steps.env.outputs.environment }}
+    
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: |
-            frontend/package-lock.json
-            backend/package-lock.json
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Install Backend Dependencies
-        run: cd backend && npm ci
+      - name: Generate Docker Image Tags
+        id: tags
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          BRANCH_NAME_SANITIZED=$(echo $BRANCH_NAME | sed 's/[\/#]/-/g')
+          
+          if [[ "$BRANCH_NAME" == "master" ]]; then
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-latest"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-latest"
+            ENV="dev"
+          elif [[ "$BRANCH_NAME" == pre-release/* ]]; then
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-pre-release-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-pre-release-${SHORT_SHA}"
+            ENV="pre-release"
+          elif [[ "$BRANCH_NAME" == release/* ]]; then
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-release-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-release-${SHORT_SHA}"
+            ENV="release"
+          else
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${BRANCH_NAME_SANITIZED}-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${BRANCH_NAME_SANITIZED}-${SHORT_SHA}"
+            ENV="dev"
+          fi
+          
+          echo "backend-tag=$BACKEND_TAG" >> $GITHUB_OUTPUT
+          echo "frontend-tag=$FRONTEND_TAG" >> $GITHUB_OUTPUT
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          
+          echo "Using tags:"
+          echo "Backend: $BACKEND_TAG"
+          echo "Frontend: $FRONTEND_TAG"
+          echo "Environment: $ENV"
       
-      - name: Run Backend Tests
-        run: cd backend && npm test
-        env:
-          NODE_ENV: test
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.backend-tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       
-      - name: Install Frontend Dependencies
-        run: cd frontend && npm ci
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.frontend-tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       
-      - name: Run Frontend Tests
-        run: cd frontend && npm test
-        env:
-          CI: true
+      - name: Print Success Message
+        run: |
+          echo "✅ Images pushed to Docker Hub!"
+          echo "Backend: ${{ steps.tags.outputs.backend-tag }}"
+          echo "Frontend: ${{ steps.tags.outputs.frontend-tag }}"
 
-  build-and-deploy:
-    name: Build and Deploy
-    needs: test
+  deploy:
+    name: Deploy to Minikube
+    needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    
-    outputs:
-      environment: ${{ steps.env.outputs.environment }}
+    environment: ${{ needs.build-and-push.outputs.environment }}
     
     steps:
       - uses: actions/checkout@v4
@@ -59,52 +105,30 @@ jobs:
           minikube version: 'v1.32.0'
           start args: '--driver=docker'
       
-      - name: Set up Minikube Docker env
-        run: |
-          eval $(minikube docker-env)
-          echo "MINIKUBE_ACTIVE_DOCKERD=minikube" >> $GITHUB_ENV
-      
-      - name: Build Backend Image
-        run: |
-          cd backend
-          docker build -t realworld-example-app_backend:latest .
-          
-      - name: Build Frontend Image  
-        run: |
-          cd frontend
-          docker build -t realworld-example-app_frontend:latest .
-      
-      - name: Determine Environment
-        id: env
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master" ]]; then
-            echo "environment=dev" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/heads/pre-release/* ]]; then
-            echo "environment=pre-release" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
-            echo "environment=release" >> $GITHUB_OUTPUT
-          else
-            echo "environment=dev" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Set up Kubernetes context
+      - name: Set up Kubernetes
         uses: azure/setup-kubectl@v3
         with:
           version: 'v1.26.0'
       
-      - name: Configure Kubernetes
+      - name: Deploy Application
         run: |
-          echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
-          kubectl cluster-info
-      
-      - name: Deploy to Environment
-        run: |
-          chmod +x .github/workflows/deploy.sh
-          ./.github/workflows/deploy.sh ${{ needs.build-and-deploy.outputs.environment }}
-      
-      - name: Verify Deployment
-        run: |
-          echo "📊 Deployment verification for ${{ needs.build-and-deploy.outputs.environment }}"
-          kubectl get pods -n $K8S_NAMESPACE-${{ needs.build-and-deploy.outputs.environment }}
-          kubectl rollout status deployment/backend -n $K8S_NAMESPACE-${{ needs.build-and-deploy.outputs.environment }} --timeout=300s
-          kubectl rollout status deployment/frontend -n $K8S_NAMESPACE-${{ needs.build-and-deploy.outputs.environment }} --timeout=300s
+          echo "Deploying to: ${{ needs.build-and-push.outputs.environment }}"
+          echo "Backend image: ${{ needs.build-and-push.outputs.backend-tag }}"
+          echo "Frontend image: ${{ needs.build-and-push.outputs.frontend-tag }}"
+          
+          # Create namespace
+          kubectl create namespace app-stack-${{ needs.build-and-push.outputs.environment }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Apply your Kubernetes manifests
+          kubectl apply -f minikube/ -n app-stack-${{ needs.build-and-push.outputs.environment }}
+          
+          # Update images
+          kubectl set image deployment/backend backend=${{ needs.build-and-push.outputs.backend-tag }} -n app-stack-${{ needs.build-and-push.outputs.environment }}
+          kubectl set image deployment/frontend frontend=${{ needs.build-and-push.outputs.frontend-tag }} -n app-stack-${{ needs.build-and-push.outputs.environment }}
+          
+          # Wait for deployment
+          kubectl rollout status deployment/backend -n app-stack-${{ needs.build-and-push.outputs.environment }} --timeout=300s
+          kubectl rollout status deployment/frontend -n app-stack-${{ needs.build-and-push.outputs.environment }} --timeout=300s
+          
+          echo "✅ Deployment completed!"
+          kubectl get all -n app-stack-${{ needs.build-and-push.outputs.environment }}
