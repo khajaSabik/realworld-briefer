@@ -16,15 +16,16 @@ jobs:
       - name: Check Secrets
         run: |
           echo "🔍 Checking GitHub Secrets..."
-          echo "DOCKERHUB_USERNAME length: ${#DOCKERHUB_USERNAME}"
-          echo "DOCKERHUB_TOKEN length: ${#DOCKERHUB_TOKEN}"
+          echo "DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && 'SET' || 'NOT SET' }}"
+          echo "DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' && 'SET' || 'NOT SET' }}"
           
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "✅ Both secrets are set"
-            echo "Username: $DOCKERHUB_USERNAME"
-            echo "Token starts with: ${DOCKERHUB_TOKEN:0:4}..."
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "✅ Both secrets are set and available"
+            echo "Username: ${{ secrets.DOCKERHUB_USERNAME }}"
+            echo "Token length: ${#{{ secrets.DOCKERHUB_TOKEN }}}"
           else
-            echo "❌ Missing one or both secrets"
+            echo "❌ One or both secrets are missing"
+            echo "Please check your GitHub repository secrets"
             exit 1
           fi
 
@@ -46,16 +47,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Test Docker Hub Authentication
-        run: |
-          echo "Testing Docker Hub authentication..."
-          # Test if we can access Docker Hub
-          docker pull hello-world
-          docker tag hello-world ${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/test-image:latest
-          echo "✅ Docker Hub authentication successful"
-      
       - name: Generate Docker Image Tags
-        id: tags
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
@@ -82,29 +74,25 @@ jobs:
           echo "Backend: $BACKEND_TAG"
           echo "Frontend: $FRONTEND_TAG"
       
-      - name: Build Backend Image
-        run: |
-          echo "Building backend image..."
-          docker build -t ${{ env.BACKEND_TAG }} ./backend
-          echo "✅ Backend image built successfully"
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ env.BACKEND_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       
-      - name: Build Frontend Image
-        run: |
-          echo "Building frontend image..."
-          docker build -t ${{ env.FRONTEND_TAG }} ./frontend
-          echo "✅ Frontend image built successfully"
-      
-      - name: Push Backend Image
-        run: |
-          echo "Pushing backend image to Docker Hub..."
-          docker push ${{ env.BACKEND_TAG }}
-          echo "✅ Backend image pushed successfully"
-      
-      - name: Push Frontend Image
-        run: |
-          echo "Pushing frontend image to Docker Hub..."
-          docker push ${{ env.FRONTEND_TAG }}
-          echo "✅ Frontend image pushed successfully"
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ env.FRONTEND_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       
       - name: Print Success Message
         run: |
@@ -112,4 +100,4 @@ jobs:
           echo "🐳 Backend: ${{ env.BACKEND_TAG }}"
           echo "🐳 Frontend: ${{ env.FRONTEND_TAG }}"
           echo ""
-          echo "🔗 View your images at: https://hub.docker.com/r/khajasabik/realworld-example/tags" 
+          echo "🔗 View your images at: https://hub.docker.com/r/khajasabik/realworld-example/tags"
