@@ -132,3 +132,4 @@ jobs:
           
           echo "✅ Deployment completed!"
           kubectl get all -n app-stack-${{ needs.build-and-push.outputs.environment }}
+          
