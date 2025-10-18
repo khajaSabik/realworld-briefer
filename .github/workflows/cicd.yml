@@ -91,4 +91,4 @@ jobs:
           echo "🐳 Frontend: ${{ env.FRONTEND_TAG }}"
           echo "🌍 Environment: ${{ env.ENVIRONMENT }}"
           echo ""
-          echo "🔗 View images at: https://hub.docker.com/r/${{ env.REPOSITORY }}"
+          echo "🔗 View images at: https://hub.docker.com/r/${{ env.REPOSITORY }}" 
