@@ -1,4 +1,4 @@
-name: CI/CD Pipeline - RealWorld App
+name: CI/CD Pipeline - Build and Push Only
 
 on:
   push:
@@ -12,11 +12,6 @@ jobs:
   build-and-push:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
-    
-    outputs:
-      backend-tag: ${{ steps.tags.outputs.backend-tag }}
-      frontend-tag: ${{ steps.tags.outputs.frontend-tag }}
-      environment: ${{ steps.vars.outputs.environment }}
     
     steps:
       - uses: actions/checkout@v4
@@ -85,59 +80,16 @@ jobs:
           tags: ${{ steps.vars.outputs.frontend-tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy:
-    name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    environment: ${{ needs.build-and-push.outputs.environment }}
-    
-    steps:
-      - uses: actions/checkout@v4
       
-      - name: Set up Minikube
-        uses: manuelmbrito/minikube-action@v1.1.1
-        with:
-          minikube version: 'v1.32.0'
-          start args: '--driver=docker'
-      
-      - name: Set up Kubernetes
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.26.0'
-      
-      - name: Deploy to Environment
+      - name: Print Success Message
         run: |
-          ENVIRONMENT="${{ needs.build-and-push.outputs.environment }}"
-          BACKEND_IMAGE="${{ needs.build-and-push.outputs.backend-tag }}"
-          FRONTEND_IMAGE="${{ needs.build-and-push.outputs.frontend-tag }}"
-          
-          echo "🚀 Deploying to $ENVIRONMENT environment"
-          echo "🐳 Backend Image: $BACKEND_IMAGE"
-          echo "🐳 Frontend Image: $FRONTEND_IMAGE"
-          
-          # Create namespace
-          kubectl create namespace app-stack-$ENVIRONMENT --dry-run=client -o yaml | kubectl apply -f -
-          
-          # Apply Kubernetes manifests
-          kubectl apply -f minikube/ -n app-stack-$ENVIRONMENT
-          
-          # Update images
-          kubectl set image deployment/backend backend=$BACKEND_IMAGE -n app-stack-$ENVIRONMENT
-          kubectl set image deployment/frontend frontend=$FRONTEND_IMAGE -n app-stack-$ENVIRONMENT
-          
-          # Wait for rollout
-          echo "⏳ Waiting for deployments to complete..."
-          kubectl rollout status deployment/backend -n app-stack-$ENVIRONMENT --timeout=300s
-          kubectl rollout status deployment/frontend -n app-stack-$ENVIRONMENT --timeout=300s
-          
-          echo "✅ Deployment completed to $ENVIRONMENT environment!"
-          
-          # Show deployment status
+          echo "🎉 SUCCESS: Images pushed to Docker Hub!"
+          echo "Environment: ${{ steps.vars.outputs.environment }}"
+          echo "🐳 Backend: ${{ steps.vars.outputs.backend-tag }}"
+          echo "🐳 Frontend: ${{ steps.vars.outputs.frontend-tag }}"
           echo ""
-          echo "📊 Deployment Status:"
-          kubectl get all -n app-stack-$ENVIRONMENT
-          
+          echo "🔗 View images: https://hub.docker.com/r/khajasabik/realworld-example/tags"
           echo ""
-          echo "🌐 Access your application:"
-          echo "minikube service frontend-nodeport -n app-stack-$ENVIRONMENT --url"
+          echo "📝 To deploy to Kubernetes, run locally:"
+          echo "   kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n app-stack-${{ steps.vars.outputs.environment }}"
+          echo "   kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n app-stack-${{ steps.vars.outputs.environment }}"
