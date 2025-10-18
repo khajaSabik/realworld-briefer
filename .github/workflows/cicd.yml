@@ -112,4 +112,4 @@ jobs:
           echo "🐳 Backend: ${{ env.BACKEND_TAG }}"
           echo "🐳 Frontend: ${{ env.FRONTEND_TAG }}"
           echo ""
-          echo "🔗 View your images at: https://hub.docker.com/r/khajasabik/realworld-example/tags"
+          echo "🔗 View your images at: https://hub.docker.com/r/khajasabik/realworld-example/tags" 
