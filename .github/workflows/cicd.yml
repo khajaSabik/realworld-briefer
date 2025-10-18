@@ -22,10 +22,9 @@ jobs:
           if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             echo "✅ Both secrets are set and available"
             echo "Username: ${{ secrets.DOCKERHUB_USERNAME }}"
-            echo "Token length: ${#{{ secrets.DOCKERHUB_TOKEN }}}"
+            echo "Token is set (length hidden for security)"
           else
             echo "❌ One or both secrets are missing"
-            echo "Please check your GitHub repository secrets"
             exit 1
           fi
 
