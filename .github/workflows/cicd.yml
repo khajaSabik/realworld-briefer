@@ -92,4 +92,4 @@ jobs:
           echo ""
           echo "📝 To deploy to Kubernetes, run locally:"
           echo "   kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n app-stack-${{ steps.vars.outputs.environment }}"
-          echo "   kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n app-stack-${{ steps.vars.outputs.environment }}"
+          echo "   kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n app-stack-${{ steps.vars.outputs.environment }}" 
