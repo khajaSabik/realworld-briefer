@@ -151,4 +151,4 @@ jobs:
           
           echo ""
           echo "🌐 Access URL:"
-          minikube service frontend-nodeport -n ${{ steps.vars.outputs.namespace }} --url
+          minikube service frontend-nodeport -n ${{ steps.vars.outputs.namespace }} --url 
