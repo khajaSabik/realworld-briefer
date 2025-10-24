@@ -1,4 +1,4 @@
-name: CI/CD Pipeline - RealWorld App
+name: CI/CD Pipeline - Windows Runner
 
 on:
   push:
@@ -9,217 +9,213 @@ env:
   REPOSITORY: khajasabik/realworld-example
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    
-    outputs:
-      backend-tag: ${{ steps.vars.outputs.backend-tag }}
-      frontend-tag: ${{ steps.vars.outputs.frontend-tag }}
-      environment: ${{ steps.vars.outputs.environment }}
-      namespace: ${{ steps.vars.outputs.namespace }}
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: self-hosted
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Setup and Verify Environment
+        shell: pwsh
+        run: |
+          Write-Host "🔍 Checking environment..."
+          docker --version
+          minikube version
+          kubectl version --client
+          kubectl cluster-info
+          kubectl get nodes
       
-      - name: Log in to Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Determine Environment and Tags
+      - name: Determine Tags and Environment
         id: vars
+        shell: pwsh
         run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          $SHORT_SHA = "${{ github.sha }}".Substring(0, 7)
+          $BRANCH = "${{ github.ref }}"
           
-          echo "📋 Branch: $BRANCH_NAME"
-          echo "🔑 Short SHA: $SHORT_SHA"
+          Write-Host "📋 Branch: $BRANCH"
+          Write-Host "🔑 Short SHA: $SHORT_SHA"
           
-          if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then
-            ENVIRONMENT="dev"
-            NAMESPACE="app-stack-dev"
-            BACKEND_TAG="${{ env.REPOSITORY }}:backend-latest"
-            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-latest"
-          elif [[ "$BRANCH_NAME" == pre-release* ]]; then
-            ENVIRONMENT="pre-release"
-            NAMESPACE="app-stack-pre-release"
-            BACKEND_TAG="${{ env.REPOSITORY }}:backend-pre-release-${SHORT_SHA}"
-            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-pre-release-${SHORT_SHA}"
-          elif [[ "$BRANCH_NAME" == release* ]]; then
-            ENVIRONMENT="release"
-            NAMESPACE="app-stack-release"
-            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${SHORT_SHA}"
-            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${SHORT_SHA}"
-          else
-            ENVIRONMENT="dev"
-            NAMESPACE="app-stack-dev"
-            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${BRANCH_NAME}-${SHORT_SHA}"
-            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${BRANCH_NAME}-${SHORT_SHA}"
-          fi
+          if ($BRANCH -eq "refs/heads/master" -or $BRANCH -eq "refs/heads/main") {
+              $ENVIRONMENT = "dev"
+              $NAMESPACE = "app-stack-dev"
+              $BACKEND_TAG = "${{ env.REPOSITORY }}:backend-latest"
+              $FRONTEND_TAG = "${{ env.REPOSITORY }}:frontend-latest"
+              $BACKEND_BRANCH_TAG = "${{ env.REPOSITORY }}:backend-dev-$SHORT_SHA"
+              $FRONTEND_BRANCH_TAG = "${{ env.REPOSITORY }}:frontend-dev-$SHORT_SHA"
+          } elseif ($BRANCH -like "*pre-release*") {
+              $ENVIRONMENT = "pre-release"
+              $NAMESPACE = "app-stack-pre-release"
+              $BACKEND_TAG = "${{ env.REPOSITORY }}:backend-pre-release-$SHORT_SHA"
+              $FRONTEND_TAG = "${{ env.REPOSITORY }}:frontend-pre-release-$SHORT_SHA"
+              $BACKEND_BRANCH_TAG = "$BACKEND_TAG"
+              $FRONTEND_BRANCH_TAG = "$FRONTEND_TAG"
+          } else {
+              $ENVIRONMENT = "release"
+              $NAMESPACE = "app-stack-release"
+              $BACKEND_TAG = "${{ env.REPOSITORY }}:backend-$SHORT_SHA"
+              $FRONTEND_TAG = "${{ env.REPOSITORY }}:frontend-$SHORT_SHA"
+              $BACKEND_BRANCH_TAG = "$BACKEND_TAG"
+              $FRONTEND_BRANCH_TAG = "$FRONTEND_TAG"
+          }
           
-          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
-          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
-          echo "backend-tag=$BACKEND_TAG" >> $GITHUB_OUTPUT
-          echo "frontend-tag=$FRONTEND_TAG" >> $GITHUB_OUTPUT
+          Write-Host "environment=$ENVIRONMENT" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "namespace=$NAMESPACE" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "backend-tag=$BACKEND_TAG" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "frontend-tag=$FRONTEND_TAG" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "backend-branch-tag=$BACKEND_BRANCH_TAG" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "frontend-branch-tag=$FRONTEND_BRANCH_TAG" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           
-          echo "🎯 Environment: $ENVIRONMENT"
-          echo "📦 Namespace: $NAMESPACE"
-          echo "🐳 Backend Tag: $BACKEND_TAG"
-          echo "🐳 Frontend Tag: $FRONTEND_TAG"
+          Write-Host "🎯 Environment: $ENVIRONMENT"
+          Write-Host "📦 Namespace: $NAMESPACE"
+          Write-Host "🐳 Backend Tag: $BACKEND_TAG"
+          Write-Host "🐳 Frontend Tag: $FRONTEND_TAG"
       
-      - name: Build and Push Backend Image
+      - name: Build and Push Backend
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ${{ steps.vars.outputs.backend-tag }}
+          tags: |
+            ${{ steps.vars.outputs.backend-tag }}
+            ${{ steps.vars.outputs.backend-branch-tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+        env:
+          DOCKER_BUILDKIT: 1
       
-      - name: Build and Push Frontend Image
+      - name: Build and Push Frontend
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
-          tags: ${{ steps.vars.outputs.frontend-tag }}
+          tags: |
+            ${{ steps.vars.outputs.frontend-tag }}
+            ${{ steps.vars.outputs.frontend-branch-tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+        env:
+          DOCKER_BUILDKIT: 1
       
-      - name: Print Build Success
+      - name: Create Namespace and Labels
+        shell: pwsh
         run: |
-          echo "✅ BUILD SUCCESS: Images pushed to Docker Hub!"
-          echo "🏷️  Backend: ${{ steps.vars.outputs.backend-tag }}"
-          echo "🏷️  Frontend: ${{ steps.vars.outputs.frontend-tag }}"
-          echo "🌍 Environment: ${{ steps.vars.outputs.environment }}"
-          echo "📦 Namespace: ${{ steps.vars.outputs.namespace }}"
-
-  deploy:
-    name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    environment: ${{ needs.build-and-push.outputs.environment }}
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Kubernetes
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.26.0'
-      
-      - name: Configure Kubeconfig
-        run: |
-          echo "🔧 Setting up Kubernetes access..."
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-          kubectl cluster-info
-      
-      - name: Create Namespace
-        run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
-          ENVIRONMENT="${{ needs.build-and-push.outputs.environment }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
+          $ENVIRONMENT = "${{ steps.vars.outputs.environment }}"
           
-          echo "📦 Creating namespace: $NAMESPACE"
+          Write-Host "📦 Creating namespace: $NAMESPACE"
           kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           
-          echo "🏷️  Labeling namespace..."
+          Write-Host "🏷️ Labeling namespace..."
           kubectl label namespace $NAMESPACE environment=$ENVIRONMENT --overwrite
           kubectl label namespace $NAMESPACE app=realworld --overwrite
-          
-          echo "✅ Namespace ready: $NAMESPACE"
       
-      - name: Deploy Database
+      - name: Deploy Database First
+        shell: pwsh
         run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
           
-          echo "🗄️  Deploying database..."
-          kubectl apply -f minikube/db-pvc.yaml -n $NAMESPACE
-          kubectl apply -f minikube/db-deployment.yaml -n $NAMESPACE
+          Write-Host "🗄️ Deploying database resources..."
+          # Apply database resources first
           kubectl apply -f minikube/secrets.yaml -n $NAMESPACE
           kubectl apply -f minikube/configmap-backend.yaml -n $NAMESPACE
           kubectl apply -f minikube/configmap-frontend.yaml -n $NAMESPACE
+          kubectl apply -f minikube/db-pvc.yaml -n $NAMESPACE
+          kubectl apply -f minikube/db-deployment.yaml -n $NAMESPACE
           
-          echo "⏳ Waiting for database to be ready..."
+          Write-Host "⏳ Waiting for database to be ready..."
           kubectl wait --for=condition=ready pod -l app=postgres -n $NAMESPACE --timeout=180s
-          echo "✅ Database is ready!"
+          Write-Host "✅ Database is ready!"
       
-      - name: Deploy Backend
+      - name: Deploy Backend Application
+        shell: pwsh
         run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
-          BACKEND_IMAGE="${{ needs.build-and-push.outputs.backend-tag }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
+          $BACKEND_IMAGE = "${{ steps.vars.outputs.backend-tag }}"
           
-          echo "🔧 Deploying backend..."
+          Write-Host "🔧 Deploying backend application..."
           kubectl apply -f minikube/backend-deployment.yaml -n $NAMESPACE
           kubectl apply -f minikube/backend-service.yaml -n $NAMESPACE
           
-          echo "🔄 Updating backend image: $BACKEND_IMAGE"
+          Write-Host "🔄 Updating backend image to: $BACKEND_IMAGE"
           kubectl set image deployment/backend backend=$BACKEND_IMAGE -n $NAMESPACE
           
-          echo "⏳ Waiting for backend rollout..."
+          Write-Host "⏳ Waiting for backend rollout..."
           kubectl rollout status deployment/backend -n $NAMESPACE --timeout=300s
-          echo "✅ Backend deployed successfully!"
+          Write-Host "✅ Backend deployed successfully!"
       
-      - name: Deploy Frontend
+      - name: Deploy Frontend Application
+        shell: pwsh
         run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
-          FRONTEND_IMAGE="${{ needs.build-and-push.outputs.frontend-tag }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
+          $FRONTEND_IMAGE = "${{ steps.vars.outputs.frontend-tag }}"
           
-          echo "🎨 Deploying frontend..."
+          Write-Host "🎨 Deploying frontend application..."
           kubectl apply -f minikube/frontend-deployment.yaml -n $NAMESPACE
           kubectl apply -f minikube/frontend-service.yaml -n $NAMESPACE
           kubectl apply -f minikube/frontend-nodeport.yaml -n $NAMESPACE
           
-          echo "🔄 Updating frontend image: $FRONTEND_IMAGE"
+          Write-Host "🔄 Updating frontend image to: $FRONTEND_IMAGE"
           kubectl set image deployment/frontend frontend=$FRONTEND_IMAGE -n $NAMESPACE
           
-          echo "⏳ Waiting for frontend rollout..."
+          Write-Host "⏳ Waiting for frontend rollout..."
           kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=300s
-          echo "✅ Frontend deployed successfully!"
+          Write-Host "✅ Frontend deployed successfully!"
       
-      - name: Deploy Ingress (if exists)
+      - name: Deploy Ingress (Optional)
+        shell: pwsh
         run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
           
-          if [ -f "minikube/ingress.yaml" ]; then
-            echo "🌐 Deploying ingress..."
-            kubectl apply -f minikube/ingress.yaml -n $NAMESPACE
-            echo "✅ Ingress deployed!"
-          else
-            echo "ℹ️  No ingress.yaml found, skipping ingress deployment"
-          fi
+          if (Test-Path "minikube/ingress.yaml") {
+              Write-Host "🌐 Deploying ingress..."
+              kubectl apply -f minikube/ingress.yaml -n $NAMESPACE
+              Write-Host "✅ Ingress deployed!"
+          } else {
+              Write-Host "ℹ️ No ingress.yaml found, skipping ingress deployment"
+          }
       
-      - name: Verify Deployment
+      - name: Verify Complete Deployment
+        shell: pwsh
         run: |
-          NAMESPACE="${{ needs.build-and-push.outputs.namespace }}"
-          ENVIRONMENT="${{ needs.build-and-push.outputs.environment }}"
+          $NAMESPACE = "${{ steps.vars.outputs.namespace }}"
+          $ENVIRONMENT = "${{ steps.vars.outputs.environment }}"
+          $BACKEND_IMAGE = "${{ steps.vars.outputs.backend-tag }}"
+          $FRONTEND_IMAGE = "${{ steps.vars.outputs.frontend-tag }}"
           
-          echo "🔍 Verifying deployment in $NAMESPACE..."
+          Write-Host "🔍 Verifying deployment in namespace: $NAMESPACE"
           
-          echo ""
-          echo "📊 DEPLOYMENT STATUS:"
+          Write-Host ""
+          Write-Host "📊 DEPLOYMENT STATUS:"
           kubectl get all -n $NAMESPACE
           
-          echo ""
-          echo "🐳 RUNNING IMAGES:"
+          Write-Host ""
+          Write-Host "🐳 RUNNING IMAGES:"
           kubectl get pods -n $NAMESPACE -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].image}{"\n"}{end}'
           
-          echo ""
-          echo "✅ DEPLOYMENT SUCCESSFUL!"
-          echo "🌍 Environment: $ENVIRONMENT"
-          echo "📦 Namespace: $NAMESPACE"
-          echo "🐳 Backend: ${{ needs.build-and-push.outputs.backend-tag }}"
-          echo "🐳 Frontend: ${{ needs.build-and-push.outputs.frontend-tag }}"
+          Write-Host ""
+          Write-Host "🎉 DEPLOYMENT SUCCESSFUL!"
+          Write-Host "🌍 Environment: $ENVIRONMENT"
+          Write-Host "📦 Namespace: $NAMESPACE"
+          Write-Host "🐳 Backend Image: $BACKEND_IMAGE"
+          Write-Host "🐳 Frontend Image: $FRONTEND_IMAGE"
           
-          echo ""
-          echo "🌐 ACCESS INSTRUCTIONS:"
-          echo "   Run: minikube service frontend-nodeport -n $NAMESPACE --url"
-          echo "   Or check: kubectl get svc -n $NAMESPACE"   
+          Write-Host ""
+          Write-Host "🌐 ACCESS YOUR APPLICATION:"
+          $URL = minikube service frontend-nodeport -n $NAMESPACE --url
+          Write-Host "   $URL"
+          
+          Write-Host ""
+          Write-Host "🔗 Docker Hub Images:"
+          Write-Host "   Backend: https://hub.docker.com/r/${{ env.REPOSITORY }}/tags"
+          Write-Host "   Frontend: https://hub.docker.com/r/${{ env.REPOSITORY }}/tags"
