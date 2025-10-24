@@ -1,0 +1,26 @@
+name: Test Simple
+
+on:
+  push:
+    branches: [ pre-release ]
+
+jobs:
+  test-simple:
+    name: Simple Test
+    runs-on: self-hosted
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Basic Commands
+        run: |
+          echo "STEP 1: Basic commands"
+          whoami
+          echo "STEP 2: Docker"
+          docker --version
+          echo "STEP 3: Kubernetes"
+          kubectl get nodes
+          echo "STEP 4: Minikube"
+          minikube status
+          echo "SUCCESS: All basic commands worked!"
