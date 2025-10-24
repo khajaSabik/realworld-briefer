@@ -222,4 +222,4 @@ jobs:
           echo ""
           echo "🌐 ACCESS INSTRUCTIONS:"
           echo "   Run: minikube service frontend-nodeport -n $NAMESPACE --url"
-          echo "   Or check: kubectl get svc -n $NAMESPACE"
+          echo "   Or check: kubectl get svc -n $NAMESPACE"   
