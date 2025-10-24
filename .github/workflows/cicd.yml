@@ -218,4 +218,4 @@ jobs:
           Write-Host ""
           Write-Host "🔗 Docker Hub Images:"
           Write-Host "   Backend: https://hub.docker.com/r/${{ env.REPOSITORY }}/tags"
-          Write-Host "   Frontend: https://hub.docker.com/r/${{ env.REPOSITORY }}/tags"
+          Write-Host "   Frontend: https://hub.docker.com/r/${{ env.REPOSITORY }}/tags" 
