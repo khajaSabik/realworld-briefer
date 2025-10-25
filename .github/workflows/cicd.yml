@@ -109,9 +109,9 @@ jobs:
           kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           kubectl label namespace $NAMESPACE environment=${{ steps.vars.outputs.environment }} --overwrite
           
-          # Apply Kubernetes manifests with namespace override and force flags
+          # Apply Kubernetes manifests with server-side apply (without --force)
           echo "Applying Kubernetes manifests..."
-          kubectl apply -f kubernetes/base/ -n $NAMESPACE --server-side=true --validate=false --force
+          kubectl apply -f kubernetes/base/ -n $NAMESPACE --server-side=true --validate=false
           
           # Wait for database
           echo "Waiting for database to be ready..."
