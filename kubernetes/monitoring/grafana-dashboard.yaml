@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard
+  namespace: monitoring
+data:
+  realworld-dashboard.json: |
+    {
+      "dashboard": {
+        "title": "RealWorld App Metrics",
+        "panels": [
+          {
+            "title": "CPU Usage",
+            "type": "stat",
+            "targets": [{"expr": "rate(container_cpu_usage_seconds_total{container=\"backend\"}[5m])"}]
+          },
+          {
+            "title": "Memory Usage",
+            "type": "stat", 
+            "targets": [{"expr": "container_memory_usage_bytes{container=\"backend\"}"}]
+          },
+          {
+            "title": "API Response Time",
+            "type": "graph",
+            "targets": [{"expr": "http_request_duration_seconds"}]
+          }
+        ]
+      }
+    }

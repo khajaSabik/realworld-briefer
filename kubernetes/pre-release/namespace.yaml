@@ -4,3 +4,4 @@ metadata:
   name: app-stack-pre-release
   labels:
     environment: pre-release
+    app: realworld

@@ -1,6 +1,7 @@
-apiVersion: v1
+piVersion: v1
 kind: Namespace
 metadata:
   name: app-stack-dev
   labels:
     environment: dev
+    app: realworld

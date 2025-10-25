@@ -2,23 +2,30 @@
 
 echo "🚀 Deploying Complete Application Stack..."
 
-echo "1. Deploying Backend..."
-kubectl apply -f backend-deployment.yaml
-kubectl apply -f backend-service.yaml
+# Create namespace first
+echo "1. Creating namespace..."
+kubectl create namespace app-stack --dry-run=client -o yaml | kubectl apply -f -
 
-echo "2. Waiting for Backend to be ready..."
-kubectl wait --for=condition=ready pod -l app=backend -n app-stack --timeout=120s
+# Apply all YAML files in the current directory to the namespace
+echo "2. Deploying all components..."
+for file in *.yaml; do
+    if [ -f "$file" ]; then
+        echo "   Applying $file..."
+        kubectl apply -f "$file" -n app-stack
+    fi
+done
 
-echo "3. Deploying Frontend..."
-kubectl apply -f frontend-deployment.yaml
-kubectl apply -f frontend-service.yaml
-kubectl apply -f frontend-nodeport.yaml
+echo "3. Waiting for database to be ready..."
+kubectl wait --for=condition=ready pod -l app=postgres -n app-stack --timeout=180s
 
-echo "4. Setting up Ingress..."
-kubectl apply -f ingress.yaml
+echo "4. Waiting for Backend to be ready..."
+kubectl wait --for=condition=ready pod -l app=backend -n app-stack --timeout=180s
+
+echo "5. Waiting for Frontend to be ready..."
+kubectl wait --for=condition=ready pod -l app=frontend -n app-stack --timeout=180s
 
 echo "⏳ Waiting for all components to stabilize..."
-sleep 20
+sleep 30
 
 echo "✅ Deployment Complete!"
 echo ""

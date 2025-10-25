@@ -1,0 +1,189 @@
+name: CI/CD Pipeline - Ubuntu
+
+on:
+  push:
+    branches: [ main, master, pre-release, 'pre-release/**', 'release/**' ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: docker.io
+  REPOSITORY: khajasabik/realworld-example
+
+jobs:
+  deploy:
+    name: Deploy Application
+    runs-on: self-hosted
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Clean Kubernetes Manifests
+        run: |
+          echo "=== Cleaning Kubernetes manifests ==="
+          find kubernetes/base/ -name "*.yaml" -type f | while read file; do
+            echo "Cleaning: $file"
+            sed -i '/namespace:/d' "$file"
+          done
+      
+      - name: Verify Ubuntu Environment
+        run: |
+          echo "=== Ubuntu Environment Verification ==="
+          minikube status
+          kubectl get nodes
+      
+      - name: Clean Old Deployments
+        run: |
+          echo "=== Cleaning old deployments ==="
+          kubectl delete deployment backend frontend --ignore-not-found=true -n app-stack-pre-release
+          kubectl delete pods -l app=backend --ignore-not-found=true -n app-stack-pre-release
+          sleep 10
+      
+      - name: Login to Docker Hub
+        run: |
+          echo "Logging into Docker Hub..."
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+      
+      - name: Determine Environment and Tags
+        id: vars
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          
+          if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then
+            ENVIRONMENT="dev"
+            NAMESPACE="app-stack-dev"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-latest"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-latest"
+          elif [[ "$BRANCH_NAME" == pre-release* ]]; then
+            ENVIRONMENT="pre-release"
+            NAMESPACE="app-stack-pre-release"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-pre-release-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-pre-release-${SHORT_SHA}"
+          elif [[ "$BRANCH_NAME" == release* ]]; then
+            ENVIRONMENT="release"
+            NAMESPACE="app-stack-release"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${SHORT_SHA}"
+          else
+            ENVIRONMENT="dev"
+            NAMESPACE="app-stack-dev"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${BRANCH_NAME}-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${BRANCH_NAME}-${SHORT_SHA}"
+          fi
+          
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "backend-tag=$BACKEND_TAG" >> $GITHUB_OUTPUT
+          echo "frontend-tag=$FRONTEND_TAG" >> $GITHUB_OUTPUT
+          
+          echo "Environment: $ENVIRONMENT"
+          echo "Namespace: $NAMESPACE"
+      
+      - name: Build and Push Backend
+        run: |
+          echo "Building backend image..."
+          docker build -t ${{ steps.vars.outputs.backend-tag }} ./backend
+          echo "Pushing backend image..."
+          docker push ${{ steps.vars.outputs.backend-tag }}
+      
+      - name: Build and Push Frontend
+        run: |
+          echo "Building frontend image..."
+          docker build -t ${{ steps.vars.outputs.frontend-tag }} ./frontend
+          echo "Pushing frontend image..."
+          docker push ${{ steps.vars.outputs.frontend-tag }}
+      
+      - name: Deploy to Kubernetes
+        run: |
+          NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          echo "Deploying to namespace: $NAMESPACE"
+          
+          # Create namespace
+          kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace $NAMESPACE environment=${{ steps.vars.outputs.environment }} --overwrite
+          
+          # Apply manifests
+          echo "Applying Kubernetes manifests..."
+          kubectl apply -f kubernetes/base/ -n $NAMESPACE --validate=false
+          
+          # Wait for database with longer timeout
+          echo "Waiting for database to be ready..."
+          kubectl wait --for=condition=ready pod -l app=postgres -n $NAMESPACE --timeout=300s
+          
+          # Setup database (create user, database, and run migrations)
+          echo "Setting up database..."
+          kubectl exec -it postgres-77c9d75589-276vg -n $NAMESPACE -- psql -U postgres -c "
+            CREATE USER myuser WITH PASSWORD 'mypassword';
+            CREATE DATABASE myappdb;
+            GRANT ALL PRIVILEGES ON DATABASE myappdb TO myuser;
+          " || echo "Database might already be setup, continuing..."
+          
+          # Give database more time to initialize
+          echo "Giving database time to initialize..."
+          sleep 30
+          
+          # Update images
+          echo "Updating container images..."
+          kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n $NAMESPACE
+          kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n $NAMESPACE
+          
+          # Wait for backend to start (but don't fail on rollout status yet)
+          echo "Waiting for backend pods to start..."
+          sleep 60
+          
+          # Run database migrations
+          echo "Running database migrations..."
+          for i in {1..10}; do
+            if kubectl get pods -l app=backend -n $NAMESPACE | grep -q "Running"; then
+              echo "Backend pod is running, attempting migrations..."
+              kubectl exec -it $(kubectl get pods -l app=backend -n $NAMESPACE -o jsonpath='{.items[0].metadata.name}') -n $NAMESPACE -- npx sequelize-cli db:migrate && break
+            else
+              echo "Attempt $i/10: Backend pod not ready yet..."
+              sleep 10
+            fi
+          done
+          
+          # Now wait for rollout
+          echo "Waiting for deployment rollout..."
+          kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=300s
+          
+          # Backend might need restart after migrations
+          echo "Restarting backend to pick up database changes..."
+          kubectl rollout restart deployment/backend -n $NAMESPACE
+          kubectl rollout status deployment/backend -n $NAMESPACE --timeout=300s
+      
+      - name: Debug Application Status
+        run: |
+          NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          echo "=== Application Debug Information ==="
+          
+          echo "Pods:"
+          kubectl get pods -n $NAMESPACE -o wide
+          
+          echo ""
+          echo "Backend Logs:"
+          kubectl logs -l app=backend -n $NAMESPACE --tail=50 || echo "No backend logs available"
+          
+          echo ""
+          echo "Database Status:"
+          kubectl exec -it postgres-77c9d75589-276vg -n $NAMESPACE -- psql -U myuser -d myappdb -c "\dt" || echo "Cannot connect to database"
+          
+          echo ""
+          echo "Services:"
+          kubectl get svc -n $NAMESPACE
+          
+          echo ""
+          echo "Application URL:"
+          echo "http://$(curl -s ifconfig.me):30080"
+      
+      - name: Print Success Message
+        run: |
+          echo "🎉 DEPLOYMENT COMPLETED"
+          echo "Environment: ${{ steps.vars.outputs.environment }}"
+          echo "Namespace: ${{ steps.vars.outputs.namespace }}"
+          echo "Backend: ${{ steps.vars.outputs.backend-tag }}"
+          echo "Frontend: ${{ steps.vars.outputs.frontend-tag }}"
+          echo ""
+          echo "🌐 Your application should be available at:"
+          echo "   http://YOUR_SERVER_IP:30080"
