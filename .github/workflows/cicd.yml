@@ -102,29 +102,30 @@ jobs:
       
       - name: Deploy to Kubernetes
         run: |
-          echo "Deploying to namespace: ${{ steps.vars.outputs.namespace }}"
+          NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          echo "Deploying to namespace: $NAMESPACE"
           
           # Create namespace
-          kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl label namespace ${{ steps.vars.outputs.namespace }} environment=${{ steps.vars.outputs.environment }} --overwrite
+          kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace $NAMESPACE environment=${{ steps.vars.outputs.environment }} --overwrite
           
-          # Apply all Kubernetes manifests
+          # Apply Kubernetes manifests with namespace override and force flags
           echo "Applying Kubernetes manifests..."
-          kubectl apply -f kubernetes/base/ -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/ -n $NAMESPACE --server-side=true --validate=false --force
           
           # Wait for database
           echo "Waiting for database to be ready..."
-          kubectl wait --for=condition=ready pod -l app=postgres -n ${{ steps.vars.outputs.namespace }} --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=postgres -n $NAMESPACE --timeout=180s
           
           # Update images
           echo "Updating container images..."
-          kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n ${{ steps.vars.outputs.namespace }}
-          kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n ${{ steps.vars.outputs.namespace }}
+          kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n $NAMESPACE
+          kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n $NAMESPACE
           
           # Wait for rollout
           echo "Waiting for deployment rollout..."
-          kubectl rollout status deployment/backend -n ${{ steps.vars.outputs.namespace }} --timeout=300s
-          kubectl rollout status deployment/frontend -n ${{ steps.vars.outputs.namespace }} --timeout=300s
+          kubectl rollout status deployment/backend -n $NAMESPACE --timeout=300s
+          kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=300s
       
       - name: Verify Deployment
         run: |
@@ -155,4 +156,4 @@ jobs:
           echo "🔧 Debug commands:"
           echo "   kubectl get all -n ${{ steps.vars.outputs.namespace }}"
           echo "   kubectl logs -l app=backend -n ${{ steps.vars.outputs.namespace }}"
-          echo "   kubectl logs -l app=frontend -n ${{ steps.vars.outputs.namespace }}"  
+          echo "   kubectl logs -l app=frontend -n ${{ steps.vars.outputs.namespace }}"
