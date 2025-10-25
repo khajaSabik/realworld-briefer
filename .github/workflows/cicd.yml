@@ -1,8 +1,10 @@
-name: CI/CD Pipeline - Windows
+name: CI/CD Pipeline - EC2 Runner
 
 on:
   push:
     branches: [ main, master, pre-release, 'pre-release/**', 'release/**' ]
+  pull_request:
+    branches: [ main, master ]
 
 env:
   REGISTRY: docker.io
@@ -17,12 +19,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Check Environment
+      - name: Verify Environment
         run: |
-          echo "--- Checking Environment ---"
+          echo "=== Environment Verification ==="
           docker --version
           minikube status
           kubectl version --client
+          kubectl cluster-info
           kubectl get nodes
       
       - name: Login to Docker Hub
@@ -32,15 +35,57 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
+      - name: Determine Environment and Tags
+        id: vars
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          
+          echo "Branch: $BRANCH_NAME"
+          echo "Short SHA: $SHORT_SHA"
+          
+          if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then
+            ENVIRONMENT="dev"
+            NAMESPACE="app-stack-dev"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-latest"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-latest"
+          elif [[ "$BRANCH_NAME" == pre-release* ]]; then
+            ENVIRONMENT="pre-release"
+            NAMESPACE="app-stack-pre-release"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-pre-release-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-pre-release-${SHORT_SHA}"
+          elif [[ "$BRANCH_NAME" == release* ]]; then
+            ENVIRONMENT="release"
+            NAMESPACE="app-stack-release"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${SHORT_SHA}"
+          else
+            ENVIRONMENT="dev"
+            NAMESPACE="app-stack-dev"
+            BACKEND_TAG="${{ env.REPOSITORY }}:backend-${BRANCH_NAME}-${SHORT_SHA}"
+            FRONTEND_TAG="${{ env.REPOSITORY }}:frontend-${BRANCH_NAME}-${SHORT_SHA}"
+          fi
+          
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "backend-tag=$BACKEND_TAG" >> $GITHUB_OUTPUT
+          echo "frontend-tag=$FRONTEND_TAG" >> $GITHUB_OUTPUT
+          
+          echo "Environment: $ENVIRONMENT"
+          echo "Namespace: $NAMESPACE"
+          echo "Backend Tag: $BACKEND_TAG"
+          echo "Frontend Tag: $FRONTEND_TAG"
+      
       - name: Build and Push Backend
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ${{ env.REPOSITORY }}:backend-test-${{ github.sha }}
+          tags: ${{ steps.vars.outputs.backend-tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          platforms: linux/amd64
       
       - name: Build and Push Frontend
         uses: docker/build-push-action@v5
@@ -48,35 +93,73 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
-          tags: ${{ env.REPOSITORY }}:frontend-test-${{ github.sha }}
+          tags: ${{ steps.vars.outputs.frontend-tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          platforms: linux/amd64
       
-      - name: Create Namespace
+      - name: Setup Kubernetes Namespace
         run: |
-          echo "Creating namespace..."
-          kubectl create namespace app-stack-test --dry-run=client -o yaml | kubectl apply -f -
+          echo "Creating namespace: ${{ steps.vars.outputs.namespace }}"
+          kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace ${{ steps.vars.outputs.namespace }} environment=${{ steps.vars.outputs.environment }} --overwrite
       
-      - name: Deploy Application
+      - name: Deploy Database
         run: |
-          echo "Deploying application..."
-          kubectl apply -f minikube/ -n app-stack-test
+          echo "Deploying database to ${{ steps.vars.outputs.namespace }}"
+          kubectl apply -f kubernetes/base/secrets.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/configmap-backend.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/configmap-frontend.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/db-pvc.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/db-deployment.yaml -n ${{ steps.vars.outputs.namespace }}
+          
+          echo "Waiting for database to be ready..."
+          kubectl wait --for=condition=ready pod -l app=postgres -n ${{ steps.vars.outputs.namespace }} --timeout=180s
       
-      - name: Update Images
+      - name: Deploy Backend
         run: |
-          echo "Updating images..."
-          kubectl set image deployment/backend backend=${{ env.REPOSITORY }}:backend-test-${{ github.sha }} -n app-stack-test
-          kubectl set image deployment/frontend frontend=${{ env.REPOSITORY }}:frontend-test-${{ github.sha }} -n app-stack-test
+          echo "Deploying backend to ${{ steps.vars.outputs.namespace }}"
+          kubectl apply -f kubernetes/base/backend-deployment.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/backend-service.yaml -n ${{ steps.vars.outputs.namespace }}
+          
+          kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n ${{ steps.vars.outputs.namespace }}
+          kubectl rollout status deployment/backend -n ${{ steps.vars.outputs.namespace }} --timeout=300s
       
-      - name: Wait for Deployment
+      - name: Deploy Frontend
         run: |
-          echo "Waiting for deployment..."
-          kubectl rollout status deployment/backend -n app-stack-test --timeout=300s
-          kubectl rollout status deployment/frontend -n app-stack-test --timeout=300s
+          echo "Deploying frontend to ${{ steps.vars.outputs.namespace }}"
+          kubectl apply -f kubernetes/base/frontend-deployment.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/frontend-service.yaml -n ${{ steps.vars.outputs.namespace }}
+          kubectl apply -f kubernetes/base/frontend-nodeport.yaml -n ${{ steps.vars.outputs.namespace }}
+          
+          kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n ${{ steps.vars.outputs.namespace }}
+          kubectl rollout status deployment/frontend -n ${{ steps.vars.outputs.namespace }} --timeout=300s
       
-      - name: Show Status
+      - name: Verify Deployment
         run: |
-          echo "--- Deployment Status ---"
-          kubectl get all -n app-stack-test
-          echo "--- Application URL ---"
-          minikube service frontend-nodeport -n app-stack-test --url 
+          echo "=== Deployment Status ==="
+          kubectl get all -n ${{ steps.vars.outputs.namespace }}
+          
+          echo "=== Running Images ==="
+          kubectl get pods -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].image}{"\n"}{end}'
+          
+          echo "=== Application URLs ==="
+          echo "Frontend NodePort:"
+          kubectl get svc frontend-nodeport -n ${{ steps.vars.outputs.namespace }}
+          
+          echo "Backend Service:"
+          kubectl get svc backend-service -n ${{ steps.vars.outputs.namespace }}
+      
+      - name: Print Access Information
+        run: |
+          echo "=== DEPLOYMENT SUCCESS ==="
+          echo "Environment: ${{ steps.vars.outputs.environment }}"
+          echo "Namespace: ${{ steps.vars.outputs.namespace }}"
+          echo "Backend Image: ${{ steps.vars.outputs.backend-tag }}"
+          echo "Frontend Image: ${{ steps.vars.outputs.frontend-tag }}"
+          echo ""
+          echo "=== ACCESS INSTRUCTIONS ==="
+          echo "1. Get EC2 public IP from AWS Console"
+          echo "2. Access application at: http://EC2_IP:30000"
+          echo "3. Check pods: kubectl get pods -n ${{ steps.vars.outputs.namespace }}"
+          echo "4. Check services: kubectl get svc -n ${{ steps.vars.outputs.namespace }}"
