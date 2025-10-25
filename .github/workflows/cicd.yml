@@ -155,4 +155,4 @@ jobs:
           echo "🔧 Debug commands:"
           echo "   kubectl get all -n ${{ steps.vars.outputs.namespace }}"
           echo "   kubectl logs -l app=backend -n ${{ steps.vars.outputs.namespace }}"
-          echo "   kubectl logs -l app=frontend -n ${{ steps.vars.outputs.namespace }}" 
+          echo "   kubectl logs -l app=frontend -n ${{ steps.vars.outputs.namespace }}"  
