@@ -1,39 +1,170 @@
-name: CI/CD Pipeline - EC2 Runner
+name: CI/CD Pipeline - Self-Contained Setup
 
 on:
   push:
     branches: [ main, master, pre-release, 'pre-release/**', 'release/**' ]
-  pull_request:
-    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggers
 
 env:
   REGISTRY: docker.io
   REPOSITORY: khajasabik/realworld-example
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy
+  setup-and-deploy:
+    name: Setup Environment and Deploy
     runs-on: self-hosted
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Verify Environment
+      - name: Detect OS and Install Dependencies
+        id: setup
         run: |
-          echo "=== Environment Verification ==="
-          docker --version
+          echo "=== Detecting Operating System ==="
+          if [ -f /etc/os-release ]; then
+              # Linux system (EC2)
+              source /etc/os-release
+              OS=$NAME
+              echo "os=linux" >> $GITHUB_OUTPUT
+          elif [ "$(uname)" == "Darwin" ]; then
+              # macOS
+              echo "os=macos" >> $GITHUB_OUTPUT
+          else
+              # Windows
+              echo "os=windows" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Detected OS: $OS"
+          echo "setup-completed=true" >> $GITHUB_OUTPUT
+      
+      - name: Install Docker (Linux)
+        if: steps.setup.outputs.os == 'linux'
+        run: |
+          echo "=== Installing Docker on Linux ==="
+          
+          # Check if Docker is already installed
+          if command -v docker &> /dev/null; then
+              echo "Docker is already installed"
+              docker --version
+          else
+              echo "Installing Docker..."
+              
+              # Update package index
+              sudo apt-get update -y || sudo yum update -y
+              
+              # Install Docker
+              if command -v apt-get &> /dev/null; then
+                  # Ubuntu/Debian
+                  sudo apt-get install -y docker.io
+                  sudo systemctl start docker
+                  sudo systemctl enable docker
+              else
+                  # Amazon Linux/CentOS/RHEL
+                  sudo yum install -y docker
+                  sudo systemctl start docker
+                  sudo systemctl enable docker
+              fi
+              
+              # Add user to docker group
+              sudo usermod -a -G docker $USER || sudo usermod -a -G docker $(whoami)
+              
+              # Verify installation
+              docker --version
+          fi
+          
+          # Start Docker service
+          sudo systemctl start docker || true
+      
+      - name: Install Docker Compose (Linux)
+        if: steps.setup.outputs.os == 'linux'
+        run: |
+          echo "=== Installing Docker Compose ==="
+          
+          if command -v docker-compose &> /dev/null; then
+              echo "Docker Compose is already installed"
+              docker-compose --version
+          else
+              echo "Installing Docker Compose..."
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+              docker-compose --version
+          fi
+      
+      - name: Install kubectl (Linux)
+        if: steps.setup.outputs.os == 'linux'
+        run: |
+          echo "=== Installing kubectl ==="
+          
+          if command -v kubectl &> /dev/null; then
+              echo "kubectl is already installed"
+              kubectl version --client
+          else
+              echo "Installing kubectl..."
+              curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+              sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+              kubectl version --client
+          fi
+      
+      - name: Install Minikube (Linux)
+        if: steps.setup.outputs.os == 'linux'
+        run: |
+          echo "=== Installing Minikube ==="
+          
+          if command -v minikube &> /dev/null; then
+              echo "Minikube is already installed"
+              minikube version
+          else
+              echo "Installing Minikube..."
+              curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+              sudo install minikube-linux-amd64 /usr/local/bin/minikube
+              minikube version
+          fi
+      
+      - name: Start Minikube Cluster
+        if: steps.setup.outputs.os == 'linux'
+        run: |
+          echo "=== Starting Minikube Cluster ==="
+          
+          # Check if Minikube is already running
+          if minikube status | grep -q "Running"; then
+              echo "Minikube is already running"
+          else
+              echo "Starting Minikube cluster..."
+              minikube start --driver=docker
+          fi
+          
+          # Verify cluster
           minikube status
-          kubectl version --client
           kubectl cluster-info
           kubectl get nodes
       
+      - name: Setup Permissions and Directories
+        run: |
+          echo "=== Setting up permissions and directories ==="
+          
+          # Create necessary directories
+          mkdir -p /tmp/kubernetes-manifests
+          
+          # Set proper permissions for Docker (Linux)
+          if [ "${{ steps.setup.outputs.os }}" == "linux" ]; then
+              sudo chmod 666 /var/run/docker.sock || true
+          fi
+      
+      - name: Verify All Installations
+        run: |
+          echo "=== Verification ==="
+          echo "Docker:" && docker --version
+          echo "Docker Compose:" && docker-compose --version
+          echo "kubectl:" && kubectl version --client
+          echo "Minikube:" && minikube version
+          echo "Minikube Status:" && minikube status
+          echo "Kubernetes Nodes:" && kubectl get nodes
+      
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "=== Logging into Docker Hub ==="
+          docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
       
       - name: Determine Environment and Tags
         id: vars
@@ -77,36 +208,26 @@ jobs:
           echo "Frontend Tag: $FRONTEND_TAG"
       
       - name: Build and Push Backend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          push: true
-          tags: ${{ steps.vars.outputs.backend-tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
+        run: |
+          echo "=== Building and Pushing Backend ==="
+          docker build -t ${{ steps.vars.outputs.backend-tag }} ./backend
+          docker push ${{ steps.vars.outputs.backend-tag }}
       
       - name: Build and Push Frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: true
-          tags: ${{ steps.vars.outputs.frontend-tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
+        run: |
+          echo "=== Building and Pushing Frontend ==="
+          docker build -t ${{ steps.vars.outputs.frontend-tag }} ./frontend
+          docker push ${{ steps.vars.outputs.frontend-tag }}
       
       - name: Setup Kubernetes Namespace
         run: |
-          echo "Creating namespace: ${{ steps.vars.outputs.namespace }}"
+          echo "=== Setting up Kubernetes Namespace ==="
           kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl label namespace ${{ steps.vars.outputs.namespace }} environment=${{ steps.vars.outputs.environment }} --overwrite
       
       - name: Deploy Database
         run: |
-          echo "Deploying database to ${{ steps.vars.outputs.namespace }}"
+          echo "=== Deploying Database ==="
           kubectl apply -f kubernetes/base/secrets.yaml -n ${{ steps.vars.outputs.namespace }}
           kubectl apply -f kubernetes/base/configmap-backend.yaml -n ${{ steps.vars.outputs.namespace }}
           kubectl apply -f kubernetes/base/configmap-frontend.yaml -n ${{ steps.vars.outputs.namespace }}
@@ -118,7 +239,7 @@ jobs:
       
       - name: Deploy Backend
         run: |
-          echo "Deploying backend to ${{ steps.vars.outputs.namespace }}"
+          echo "=== Deploying Backend ==="
           kubectl apply -f kubernetes/base/backend-deployment.yaml -n ${{ steps.vars.outputs.namespace }}
           kubectl apply -f kubernetes/base/backend-service.yaml -n ${{ steps.vars.outputs.namespace }}
           
@@ -127,7 +248,7 @@ jobs:
       
       - name: Deploy Frontend
         run: |
-          echo "Deploying frontend to ${{ steps.vars.outputs.namespace }}"
+          echo "=== Deploying Frontend ==="
           kubectl apply -f kubernetes/base/frontend-deployment.yaml -n ${{ steps.vars.outputs.namespace }}
           kubectl apply -f kubernetes/base/frontend-service.yaml -n ${{ steps.vars.outputs.namespace }}
           kubectl apply -f kubernetes/base/frontend-nodeport.yaml -n ${{ steps.vars.outputs.namespace }}
@@ -137,29 +258,23 @@ jobs:
       
       - name: Verify Deployment
         run: |
-          echo "=== Deployment Status ==="
+          echo "=== Verifying Deployment ==="
+          echo "Deployment Status:"
           kubectl get all -n ${{ steps.vars.outputs.namespace }}
           
-          echo "=== Running Images ==="
+          echo "Running Images:"
           kubectl get pods -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].image}{"\n"}{end}'
-          
-          echo "=== Application URLs ==="
-          echo "Frontend NodePort:"
-          kubectl get svc frontend-nodeport -n ${{ steps.vars.outputs.namespace }}
-          
-          echo "Backend Service:"
-          kubectl get svc backend-service -n ${{ steps.vars.outputs.namespace }}
       
       - name: Print Access Information
         run: |
-          echo "=== DEPLOYMENT SUCCESS ==="
+          echo "=== DEPLOYMENT COMPLETE ==="
           echo "Environment: ${{ steps.vars.outputs.environment }}"
           echo "Namespace: ${{ steps.vars.outputs.namespace }}"
           echo "Backend Image: ${{ steps.vars.outputs.backend-tag }}"
           echo "Frontend Image: ${{ steps.vars.outputs.frontend-tag }}"
           echo ""
           echo "=== ACCESS INSTRUCTIONS ==="
-          echo "1. Get EC2 public IP from AWS Console"
-          echo "2. Access application at: http://EC2_IP:30000"
-          echo "3. Check pods: kubectl get pods -n ${{ steps.vars.outputs.namespace }}"
-          echo "4. Check services: kubectl get svc -n ${{ steps.vars.outputs.namespace }}"
+          echo "1. Get application URL:"
+          echo "   kubectl get svc frontend-nodeport -n ${{ steps.vars.outputs.namespace }}"
+          echo "2. Access via NodePort on EC2 public IP"
+          echo "3. Check logs: kubectl logs -l app=backend -n ${{ steps.vars.outputs.namespace }}"
