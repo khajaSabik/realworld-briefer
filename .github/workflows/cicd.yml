@@ -18,6 +18,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Remove Hardcoded Namespaces
+        run: |
+          echo "=== Removing hardcoded namespaces ==="
+          find kubernetes/base/ -name "*.yaml" -type f -exec sed -i '/namespace:/d' {} \;
+          echo "✅ Namespaces removed from all manifests"
+      
       - name: Verify Ubuntu Environment
         run: |
           echo "=== Ubuntu Environment Verification ==="
@@ -109,9 +115,9 @@ jobs:
           kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           kubectl label namespace $NAMESPACE environment=${{ steps.vars.outputs.environment }} --overwrite
           
-          # Apply Kubernetes manifests with server-side apply (without --force)
+          # Apply all manifests to the target namespace
           echo "Applying Kubernetes manifests..."
-          kubectl apply -f kubernetes/base/ -n $NAMESPACE --server-side=true --validate=false
+          kubectl apply -f kubernetes/base/ -n $NAMESPACE --validate=false
           
           # Wait for database
           echo "Waiting for database to be ready..."
