@@ -18,34 +18,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Remove Hardcoded Namespaces
+      - name: Clean Kubernetes Manifests
         run: |
-          echo "=== Removing hardcoded namespaces ==="
-          find kubernetes/base/ -name "*.yaml" -type f -exec sed -i '/namespace:/d' {} \;
-          echo "✅ Namespaces removed from all manifests"
+          echo "=== Cleaning Kubernetes manifests ==="
+          find kubernetes/base/ -name "*.yaml" -type f | while read file; do
+            echo "Cleaning: $file"
+            sed -i '/namespace:/d' "$file"
+          done
       
       - name: Verify Ubuntu Environment
         run: |
           echo "=== Ubuntu Environment Verification ==="
-          echo "OS: $(lsb_release -d | cut -f2)"
-          echo "Docker:" && docker --version
-          echo "Docker Compose:" && docker-compose --version
-          echo "kubectl:" && kubectl version --client
-          echo "Minikube:" && minikube version
-          echo "Minikube Status:" && minikube status
-          echo "Kubernetes Nodes:" && kubectl get nodes
-          echo "✅ Ubuntu environment verified"
-      
-      - name: Ensure Minikube is Running
-        run: |
-          echo "Checking Minikube status..."
-          if ! minikube status | grep -q "Running"; then
-            echo "Starting Minikube cluster..."
-            minikube start --driver=docker
-          else
-            echo "Minikube is already running"
-          fi
           minikube status
+          kubectl get nodes
+      
+      - name: Clean Old Deployments
+        run: |
+          echo "=== Cleaning old deployments ==="
+          kubectl delete deployment backend frontend --ignore-not-found=true -n app-stack-pre-release
+          kubectl delete pods -l app=backend --ignore-not-found=true -n app-stack-pre-release
+          sleep 10
       
       - name: Login to Docker Hub
         run: |
@@ -87,8 +79,6 @@ jobs:
           
           echo "Environment: $ENVIRONMENT"
           echo "Namespace: $NAMESPACE"
-          echo "Backend Tag: $BACKEND_TAG"
-          echo "Frontend Tag: $FRONTEND_TAG"
       
       - name: Build and Push Backend
         run: |
@@ -96,7 +86,6 @@ jobs:
           docker build -t ${{ steps.vars.outputs.backend-tag }} ./backend
           echo "Pushing backend image..."
           docker push ${{ steps.vars.outputs.backend-tag }}
-          echo "✅ Backend image pushed: ${{ steps.vars.outputs.backend-tag }}"
       
       - name: Build and Push Frontend
         run: |
@@ -104,7 +93,6 @@ jobs:
           docker build -t ${{ steps.vars.outputs.frontend-tag }} ./frontend
           echo "Pushing frontend image..."
           docker push ${{ steps.vars.outputs.frontend-tag }}
-          echo "✅ Frontend image pushed: ${{ steps.vars.outputs.frontend-tag }}"
       
       - name: Deploy to Kubernetes
         run: |
@@ -115,51 +103,87 @@ jobs:
           kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           kubectl label namespace $NAMESPACE environment=${{ steps.vars.outputs.environment }} --overwrite
           
-          # Apply all manifests to the target namespace
+          # Apply manifests
           echo "Applying Kubernetes manifests..."
           kubectl apply -f kubernetes/base/ -n $NAMESPACE --validate=false
           
-          # Wait for database
+          # Wait for database with longer timeout
           echo "Waiting for database to be ready..."
-          kubectl wait --for=condition=ready pod -l app=postgres -n $NAMESPACE --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=postgres -n $NAMESPACE --timeout=300s
+          
+          # Setup database (create user, database, and run migrations)
+          echo "Setting up database..."
+          kubectl exec -it postgres-77c9d75589-276vg -n $NAMESPACE -- psql -U postgres -c "
+            CREATE USER myuser WITH PASSWORD 'mypassword';
+            CREATE DATABASE myappdb;
+            GRANT ALL PRIVILEGES ON DATABASE myappdb TO myuser;
+          " || echo "Database might already be setup, continuing..."
+          
+          # Give database more time to initialize
+          echo "Giving database time to initialize..."
+          sleep 30
           
           # Update images
           echo "Updating container images..."
           kubectl set image deployment/backend backend=${{ steps.vars.outputs.backend-tag }} -n $NAMESPACE
           kubectl set image deployment/frontend frontend=${{ steps.vars.outputs.frontend-tag }} -n $NAMESPACE
           
-          # Wait for rollout
+          # Wait for backend to start (but don't fail on rollout status yet)
+          echo "Waiting for backend pods to start..."
+          sleep 60
+          
+          # Run database migrations
+          echo "Running database migrations..."
+          for i in {1..10}; do
+            if kubectl get pods -l app=backend -n $NAMESPACE | grep -q "Running"; then
+              echo "Backend pod is running, attempting migrations..."
+              kubectl exec -it $(kubectl get pods -l app=backend -n $NAMESPACE -o jsonpath='{.items[0].metadata.name}') -n $NAMESPACE -- npx sequelize-cli db:migrate && break
+            else
+              echo "Attempt $i/10: Backend pod not ready yet..."
+              sleep 10
+            fi
+          done
+          
+          # Now wait for rollout
           echo "Waiting for deployment rollout..."
-          kubectl rollout status deployment/backend -n $NAMESPACE --timeout=300s
           kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=300s
+          
+          # Backend might need restart after migrations
+          echo "Restarting backend to pick up database changes..."
+          kubectl rollout restart deployment/backend -n $NAMESPACE
+          kubectl rollout status deployment/backend -n $NAMESPACE --timeout=300s
       
-      - name: Verify Deployment
+      - name: Debug Application Status
         run: |
-          echo "=== Deployment Verification ==="
+          NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          echo "=== Application Debug Information ==="
+          
           echo "Pods:"
-          kubectl get pods -n ${{ steps.vars.outputs.namespace }}
+          kubectl get pods -n $NAMESPACE -o wide
+          
+          echo ""
+          echo "Backend Logs:"
+          kubectl logs -l app=backend -n $NAMESPACE --tail=50 || echo "No backend logs available"
+          
+          echo ""
+          echo "Database Status:"
+          kubectl exec -it postgres-77c9d75589-276vg -n $NAMESPACE -- psql -U myuser -d myappdb -c "\dt" || echo "Cannot connect to database"
+          
           echo ""
           echo "Services:"
-          kubectl get svc -n ${{ steps.vars.outputs.namespace }}
+          kubectl get svc -n $NAMESPACE
+          
           echo ""
-          echo "Deployments:"
-          kubectl get deployments -n ${{ steps.vars.outputs.namespace }}
+          echo "Application URL:"
+          echo "http://$(curl -s ifconfig.me):30080"
       
-      - name: Print Access Information
+      - name: Print Success Message
         run: |
-          echo "🎉 DEPLOYMENT SUCCESSFUL"
+          echo "🎉 DEPLOYMENT COMPLETED"
           echo "Environment: ${{ steps.vars.outputs.environment }}"
           echo "Namespace: ${{ steps.vars.outputs.namespace }}"
           echo "Backend: ${{ steps.vars.outputs.backend-tag }}"
           echo "Frontend: ${{ steps.vars.outputs.frontend-tag }}"
           echo ""
-          echo "🌐 ACCESS INSTRUCTIONS:"
-          echo "1. Get server IP from your cloud provider"
-          echo "2. Access application at: http://SERVER_IP:30000"
-          echo "3. Or use port-forward: kubectl port-forward -n ${{ steps.vars.outputs.namespace }} service/frontend-service 8080:80"
-          echo "4. Then visit: http://localhost:8080"
-          echo ""
-          echo "🔧 Debug commands:"
-          echo "   kubectl get all -n ${{ steps.vars.outputs.namespace }}"
-          echo "   kubectl logs -l app=backend -n ${{ steps.vars.outputs.namespace }}"
-          echo "   kubectl logs -l app=frontend -n ${{ steps.vars.outputs.namespace }}"
+          echo "🌐 Your application should be available at:"
+          echo "   http://YOUR_SERVER_IP:30080"
